@@ -2,50 +2,96 @@
 
 import fetch from "node-fetch";
 import cheerio from 'cheerio';
+import qs from 'qs';
 
-const EMAIL = process.env.EMAIL
-const PASSWORD = process.env.PASSWORD
-const SCHEDULE_ID = process.env.SCHEDULE_ID
-const FACILITY_ID = process.env.FACILITY_ID
-const LOCALE = process.env.LOCALE
-const REFRESH_DELAY = Number(process.env.REFRESH_DELAY || 3)
+const EMAIL = ''
+const PASSWORD = ''
+const SCHEDULE_ID = ''
+const PREFERED_FACILITY_ID = 125
+const LOCALE = 'tr-tr'
+const REFRESH_DELAY = 11
 
 const BASE_URI = `https://ais.usvisa-info.com/${LOCALE}/niv`
+const APPOINTMENT_URI = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment`
 
-async function main(currentBookedDate) {
-  if (!currentBookedDate) {
-    log(`Invalid current booked date: ${currentBookedDate}`)
+// const DATE_URL = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment/days/${PREFERED_FACILITY_ID}.json?appointments[expedite]=false`
+// const TIME_URL = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment/times/${PREFERED_FACILITY_ID}.json?date=%s&appointments[expedite]=false`
+// const APPOINTMENT_URL = '${BASE_URI}/schedule/{SCHEDULE_ID}/appointment'
+
+let sessionHeaders = null
+let facilities = null
+
+async function main(currentConsularDate, currentAscDate) {
+  if (!currentConsularDate) {
+    log(`Invalid current consular date: ${currentConsularDate}`)
     process.exit(1)
   }
 
-  log(`Initializing with current date ${currentBookedDate}`)
+  log(`Initializing with current consular date ${currentConsularDate} and asc date ${currentAscDate}`)
 
   try {
-    const sessionHeaders = await login()
+    sessionHeaders = await retry(login)
+    facilities = await retry(extractFacilities)
 
     while(true) {
-      const date = await checkAvailableDate(sessionHeaders)
+      const { asc: ascFacilities, consular: consularFacilities } = facilities
+      const consularDate = await checkAvailableDate(consularFacilities[0])
 
-      if (!date) {
-        log("no dates available")
-      } else if (date > currentBookedDate) {
-        log(`nearest date is further than already booked (${currentBookedDate} vs ${date})`)
+      if (!consularDate) {
+        log("No dates available")
+      } else if (consularDate >= currentConsularDate) {
+        log(`Nearest date is worse or equal what's already booked (${consularDate} vs ${currentConsularDate})`)
       } else {
-        currentBookedDate = date
-        const time = await checkAvailableTime(sessionHeaders, date)
+        const consularTime = await checkAvailableTime(consularFacilities[0], consularDate)
 
-        book(sessionHeaders, date, time)
-          .then(d => log(`booked time at ${date} ${time}`))
+        let ascDate = ''
+        let ascTime = ''
+        let params = {
+          consularFacilityId: consularFacilities[0],
+          consularDate,
+          consularTime,
+          ascFacilityId: ascFacilities[0],
+          ascDate,
+          ascTime,
+        }
+
+        if (currentAscDate) {
+          const ascParams = {
+            consulate_id: consularFacilities[0],
+            consulate_date: consularDate,
+            consulate_time: consularTime
+          }
+
+          const bestAscDate = await checkAvailableDate(ascFacilities[0], ascParams)
+          if (!bestAscDate) {
+            log("No asc dates available")
+            continue
+          }
+
+          ascDate = bestAscDate < currentAscDate ? bestAscDate : currentAscDate
+          ascTime = await checkAvailableTime(ascFacilities[0], ascDate, ascParams)
+          params = Object.assign({}, params, {
+            ascDate,
+            ascTime
+          })
+        }
+
+        book(params).then(() => {
+          log(`Booked appointment with ${params}`)
+        })
+
+        currentConsularDate = consularDate
+        currentAscDate = ascDate
       }
 
       await sleep(REFRESH_DELAY)
     }
-
   } catch(err) {
     console.error(err)
-    log("Trying again")
+    log("Trying again in 5 seconds")
+    await sleep(5)
 
-    main(currentBookedDate)
+    main(currentConsularDate, currentAscDate)
   }
 }
 
@@ -60,7 +106,8 @@ async function login() {
       "Connection": "keep-alive",
     },
   })
-    .then(response => extractHeaders(response))
+    .then(handleErrors)
+    .then(extractHeaders)
 
   return fetch(`${BASE_URI}/users/sign_in`, {
     "headers": Object.assign({}, anonymousHeaders, {
@@ -75,41 +122,75 @@ async function login() {
       'commit': 'Acessar'
     }),
   })
-    .then(res => (
+    .then(handleErrors)
+    .then(response => (
       Object.assign({}, anonymousHeaders, {
-        'Cookie': extractRelevantCookies(res)
+        'Cookie': extractRelevantCookies(response)
       })
     ))
 }
 
-function checkAvailableDate(headers) {
-  return fetch(`${BASE_URI}/schedule/${SCHEDULE_ID}/appointment/days/${FACILITY_ID}.json?appointments[expedite]=false`, {
-    "headers": Object.assign({}, headers, {
-      "Accept": "application/json",
-      "X-Requested-With": "XMLHttpRequest",
-    }),
-    "cache": "no-store"
-  })
-    .then(r => r.json())
-    .then(r => handleErrors(r))
-    .then(d => d.length > 0 ? d[0]['date'] : null)
+async function extractFacilities() {
+  log(`Loading facilities`)
 
+  const response = await loadAppointmentPage()
+
+  const html = await response.text()
+  const $ = cheerio.load(html);
+  const ascFacilities = parseSelectOptions($, '#appointments_asc_appointment_facility_id')
+  const consularFacilities = parseSelectOptions($, '#appointments_consulate_appointment_facility_id')
+
+  return {
+    asc: ascFacilities,
+    consular: consularFacilities,
+  }
 }
 
-function checkAvailableTime(headers, date) {
-  return fetch(`${BASE_URI}/schedule/${SCHEDULE_ID}/appointment/times/${FACILITY_ID}.json?date=${date}&appointments[expedite]=false`, {
-    "headers": Object.assign({}, headers, {
+function checkAvailableDate(facilityId, params = {}) {
+  const mergedParams = Object.assign({}, params, {
+    appointments: {
+      expedite: false
+    }
+  })
+
+  return jsonRequest(`${APPOINTMENT_URI}/days/${facilityId}.json?` + qs.stringify(mergedParams))
+    .then(d => d.length > 0 ? d[0]['date'] : null)
+}
+
+function checkAvailableTime(facilityId, date, params = {}) {
+  const mergedParams = Object.assign({}, params, {
+    date: date,
+    appointments: {
+      expedite: false
+    }
+  })
+
+  return jsonRequest(`${APPOINTMENT_URI}/times/${facilityId}.json?` + qs.stringify(mergedParams))
+    .then(d => d['business_times'][0] || d['available_times'][0])
+}
+
+function jsonRequest(url) {
+  return fetch(url, {
+    "headers": Object.assign({}, sessionHeaders, {
       "Accept": "application/json",
       "X-Requested-With": "XMLHttpRequest",
     }),
     "cache": "no-store",
   })
-    .then(r => r.json())
-    .then(r => handleErrors(r))
-    .then(d => d['business_times'][0] || d['available_times'][0])
+    .then(handleErrors)
+    .then(response => response.json())
+    .then(handleErrorBody)
 }
 
 function handleErrors(response) {
+  if (!response.ok) {
+    throw new Error(`Got response status: ${response.status}`);
+  }
+
+  return response
+}
+
+function handleErrorBody(response) {
   const errorMessage = response['error']
 
   if (errorMessage) {
@@ -119,13 +200,11 @@ function handleErrors(response) {
   return response
 }
 
-async function book(headers, date, time) {
-  const url = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment`
+async function book({ consularFacilityId, consularDate, consularTime, ascFacilityId, ascDate, ascTime }) {
+  const newHeaders = await loadAppointmentPage()
+    .then(extractHeaders)
 
-  const newHeaders = await fetch(url, { "headers": headers })
-    .then(response => extractHeaders(response))
-
-  return fetch(url, {
+  return fetch(APPOINTMENT_URI, {
     "method": "POST",
     "redirect": "follow",
     "headers": Object.assign({}, newHeaders, {
@@ -136,20 +215,25 @@ async function book(headers, date, time) {
       'authenticity_token': newHeaders['X-CSRF-Token'],
       'confirmed_limit_message': '1',
       'use_consulate_appointment_capacity': 'true',
-      'appointments[consulate_appointment][facility_id]': FACILITY_ID,
-      'appointments[consulate_appointment][date]': date,
-      'appointments[consulate_appointment][time]': time,
-      'appointments[asc_appointment][facility_id]': '',
-      'appointments[asc_appointment][date]': '',
-      'appointments[asc_appointment][time]': ''
+      'appointments[consulate_appointment][facility_id]': consularFacilityId,
+      'appointments[consulate_appointment][date]': consularDate,
+      'appointments[consulate_appointment][time]': consularTime,
+      'appointments[asc_appointment][facility_id]': ascFacilityId,
+      'appointments[asc_appointment][date]': ascDate,
+      'appointments[asc_appointment][time]': ascTime,
     }),
   })
 }
 
-async function extractHeaders(res) {
-  const cookies = extractRelevantCookies(res)
+function loadAppointmentPage() {
+  return fetch(APPOINTMENT_URI, { "headers": sessionHeaders })
+    .then(handleErrors)
+}
 
-  const html = await res.text()
+async function extractHeaders(response) {
+  const cookies = extractRelevantCookies(response)
+
+  const html = await response.text()
   const $ = cheerio.load(html);
   const csrfToken = $('meta[name="csrf-token"]').attr('content')
 
@@ -165,7 +249,7 @@ async function extractHeaders(res) {
 }
 
 function extractRelevantCookies(res) {
-  const parsedCookies = parseCookies(res.headers.get('set-cookie'))
+  const parsedCookies = parseCookies(res.headers.get('set-cookie') || '')
   return `_yatri_session=${parsedCookies['_yatri_session']}`
 }
 
@@ -180,10 +264,30 @@ function parseCookies(cookies) {
   return parsedCookies
 }
 
+function parseSelectOptions($, selector) {
+  return $(selector).find('option').get().map(el => $(el).val().trim()).filter(v => v)
+}
+
 function sleep(s) {
   return new Promise((resolve) => {
     setTimeout(resolve, s * 1000);
   });
+}
+
+async function retry(fn, retries = 5) {
+  try {
+    return fn().catch(err => {
+      log(`Soft retrying. Error: ${err}`)
+      throw err
+    })
+  } catch(err) {
+    if (retries === 0) {
+      throw err
+    }
+
+    await sleep(60)
+    return retry(fn, retries - 1)
+  }
 }
 
 function log(message) {
@@ -191,5 +295,6 @@ function log(message) {
 }
 
 const args = process.argv.slice(2);
-const currentBookedDate = args[0]
-main(currentBookedDate)
+const currentConsularDate = args[0]
+const currentAscDate = args[1]
+main(currentConsularDate, currentAscDate)
