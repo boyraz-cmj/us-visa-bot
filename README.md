@@ -20,6 +20,8 @@ You'll need node 16+ to run the bot. Also, you'll have to install some dependenc
 
 ```sh
 npm install
+npm install node-fetch
+npm install qs
 ```
 
 ## Usage
