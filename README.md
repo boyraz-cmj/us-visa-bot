@@ -19,6 +19,8 @@ it checks the nearest dates every few seconds. When it finds a closer date, it a
 You'll need node 16+ to run the bot. Also, you'll have to install some dependencies:
 
 ```sh
+brew install node
+
 npm install
 npm install node-fetch
 npm install qs
