@@ -9,9 +9,9 @@ it checks the nearest dates every few seconds. When it finds a closer date, it a
 ## How to find the variables?
 
 - EMAIL and PASSWORD are your credentials to https://ais.usvisa-info.com.
-- LOCALE depends on your language, can be found in the URL when trying to reschedule https://ais.usvisa-info.com/{LOCALE}/. 'fr-fr' for France, 'pt-br' for Brazil...
+- LOCALE depends on your language, can be found in the URL when trying to reschedule https://ais.usvisa-info.com/{LOCALE}/. 'tr-TR' for Turkey...
 - SCHEDULE_ID can be found in the URL when trying to reschedule manually https://ais.usvisa-info.com/{LOCALE}/niv/schedule/{SCHEDULE_ID}/continue_actions.
-- FACILITY_ID can be found looking at the network calls when trying to reschedule manually, when you get on the page where you can select a new date, you should see a network call similar to https://ais.usvisa-info.com/{LOCALE}/niv/schedule/{SCHEDULE_ID}/appointment/address/{FACILITY_ID}. Paris is 44. Alternatively you can inspect the Selector on this page and look at the value.
+- FACILITY_ID can be found looking at the network calls when trying to reschedule manually, when you get on the page where you can select a new date, you should see a network call similar to https://ais.usvisa-info.com/{LOCALE}/niv/schedule/{SCHEDULE_ID}/appointment/address/{FACILITY_ID}. İstanbul is 124, Ankara is 125. Alternatively you can inspect the Selector on this page and look at the value.
 
 
 ## Installing
@@ -25,11 +25,5 @@ npm install
 ## Usage
 
 ```sh
-export EMAIL=''
-export PASSWORD=''
-export LOCALE=''
-export SCHEDULE_ID=
-export FACILITY_ID=
-
-./index.js <your current interview date, ex: 2023-01-01>
+./index.js <your current interview date, ex: 2024-08-01>
 ```
