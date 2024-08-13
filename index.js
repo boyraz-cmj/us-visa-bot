@@ -4,10 +4,11 @@ import fetch from "node-fetch";
 import cheerio from 'cheerio';
 import qs from 'qs';
 
-const EMAIL = ''
-const PASSWORD = ''
-const SCHEDULE_ID = ''
-const PREFERED_FACILITY_ID = 125
+const EMAIL = 'foo@bar.com'
+const PASSWORD = '*********'
+const SCHEDULE_ID = '12345678'
+const PREFERED_FACILITY_ID = 125 // Istanbul
+// 124 Ankara
 const LOCALE = 'tr-tr'
 const REFRESH_DELAY = 11
 
@@ -20,6 +21,12 @@ const APPOINTMENT_URI = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment`
 
 let sessionHeaders = null
 let facilities = null
+
+function getRefreshDelay() {
+  let delay =  Math.floor(Math.random() * (15 - 5 + 1)) + 5;
+  log(`Will be delayed this time for ${delay} sec.`)
+  return delay;
+}
 
 async function main(currentConsularDate, currentAscDate) {
   if (!currentConsularDate) {
@@ -35,48 +42,60 @@ async function main(currentConsularDate, currentAscDate) {
 
     while(true) {
       const { asc: ascFacilities, consular: consularFacilities } = facilities
-      const consularDate = await checkAvailableDate(consularFacilities[0])
+      let facilityIndexForIstanbul = 1;
+      let facilityIndexforAnkara = 0;
+      let consularFacility = consularFacilities[facilityIndexForIstanbul];
+      let ascFacility = ascFacilities[0];
+      const consularDate = await checkAvailableDate(consularFacility)
 
       if (!consularDate) {
         log("No dates available")
       } else if (consularDate >= currentConsularDate) {
-        log(`Nearest date is worse or equal what's already booked (${consularDate} vs ${currentConsularDate})`)
+        var city = '';
+        if (consularFacility == 125) {
+          city = 'İstanbul';
+        } else if (consularFacility == 124) {
+          city = 'Ankara';
+        }
+
+        log(`Nearest date for ${city} is worse or equal what's already booked (${consularDate} vs ${currentConsularDate})`)
       } else {
-        const consularTime = await checkAvailableTime(consularFacilities[0], consularDate)
+        const consularTime = await checkAvailableTime(consularFacility, consularDate)
 
         let ascDate = ''
         let ascTime = ''
         let params = {
-          consularFacilityId: consularFacilities[0],
+          consularFacilityId: consularFacility,
           consularDate,
           consularTime,
-          ascFacilityId: ascFacilities[0],
+          ascFacilityId: ascFacility,
           ascDate,
           ascTime,
         }
 
         if (currentAscDate) {
           const ascParams = {
-            consulate_id: consularFacilities[0],
+            consulate_id: consularFacility,
             consulate_date: consularDate,
             consulate_time: consularTime
           }
 
-          const bestAscDate = await checkAvailableDate(ascFacilities[0], ascParams)
+          const bestAscDate = await checkAvailableDate(ascFacility, ascParams)
           if (!bestAscDate) {
             log("No asc dates available")
             continue
           }
 
           ascDate = bestAscDate < currentAscDate ? bestAscDate : currentAscDate
-          ascTime = await checkAvailableTime(ascFacilities[0], ascDate, ascParams)
+          ascTime = await checkAvailableTime(ascFacility, ascDate, ascParams)
           params = Object.assign({}, params, {
             ascDate,
             ascTime
           })
         }
 
-        book(params).then(() => {
+       retry(book(params), 5, 5)
+       .then(() => {
           log(`Booked appointment with ${params}`)
         })
 
@@ -84,7 +103,7 @@ async function main(currentConsularDate, currentAscDate) {
         currentAscDate = ascDate
       }
 
-      await sleep(REFRESH_DELAY)
+      await sleep(getRefreshDelay())
     }
   } catch(err) {
     console.error(err)
@@ -223,6 +242,7 @@ async function book({ consularFacilityId, consularDate, consularTime, ascFacilit
       'appointments[asc_appointment][time]': ascTime,
     }),
   })
+  .then(handleErrors)
 }
 
 function loadAppointmentPage() {
@@ -274,7 +294,7 @@ function sleep(s) {
   });
 }
 
-async function retry(fn, retries = 5) {
+async function retry(fn, retries = 5, sleepInterval = 60) {
   try {
     return fn().catch(err => {
       log(`Soft retrying. Error: ${err}`)
@@ -285,7 +305,7 @@ async function retry(fn, retries = 5) {
       throw err
     }
 
-    await sleep(60)
+    await sleep(sleepInterval)
     return retry(fn, retries - 1)
   }
 }
