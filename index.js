@@ -3,13 +3,14 @@
 import fetch from "node-fetch";
 import cheerio from 'cheerio';
 import qs from 'qs';
+import config from './config.js';
+import fs from 'fs/promises';
 
-const EMAIL = ''
-const PASSWORD = ''
-const SCHEDULE_ID = ''
-const PREFERED_FACILITY_ID = 125
-const LOCALE = 'tr-tr'
-const REFRESH_DELAY = 11
+const EMAIL = config.email
+const PASSWORD = config.password
+const SCHEDULE_ID = config.scheduleId
+const PREFERED_FACILITY_ID = config.preferedFacilityId
+const LOCALE = config.locale
 
 const BASE_URI = `https://ais.usvisa-info.com/${LOCALE}/niv`
 const APPOINTMENT_URI = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment`
@@ -21,78 +22,117 @@ const APPOINTMENT_URI = `${BASE_URI}/schedule/${SCHEDULE_ID}/appointment`
 let sessionHeaders = null
 let facilities = null
 
-async function main(currentConsularDate, currentAscDate) {
-  if (!currentConsularDate) {
-    log(`Invalid current consular date: ${currentConsularDate}`)
-    process.exit(1)
-  }
+// Add function to generate random delay between 11 seconds and 5 minutes
+function getRandomDelay() {
+  const minDelay = 11;  // 11 seconds
+  const maxDelay = 300; // 5 minutes
+  return Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+}
 
-  log(`Initializing with current consular date ${currentConsularDate} and asc date ${currentAscDate}`)
+// Config güncelleme fonksiyonu
+async function updateConfigDate(newDate) {
+    try {
+        const configPath = new URL('./config.js', import.meta.url);
+        const configContent = await fs.readFile(configPath, 'utf-8');
+        
+        // Mevcut config içeriğini parse et
+        const configRegex = /export default\s*({[\s\S]*})/;
+        const match = configContent.match(configRegex);
+        if (!match) throw new Error('Config format error');
+        
+        const config = eval('(' + match[1] + ')');
+        config.currentDate = newDate;
 
-  try {
-    sessionHeaders = await retry(login)
-    facilities = await retry(extractFacilities)
-
-    while(true) {
-      const { asc: ascFacilities, consular: consularFacilities } = facilities
-      const consularDate = await checkAvailableDate(consularFacilities[0])
-
-      if (!consularDate) {
-        log("No dates available")
-      } else if (consularDate >= currentConsularDate) {
-        log(`Nearest date is worse or equal what's already booked (${consularDate} vs ${currentConsularDate})`)
-      } else {
-        const consularTime = await checkAvailableTime(consularFacilities[0], consularDate)
-
-        let ascDate = ''
-        let ascTime = ''
-        let params = {
-          consularFacilityId: consularFacilities[0],
-          consularDate,
-          consularTime,
-          ascFacilityId: ascFacilities[0],
-          ascDate,
-          ascTime,
-        }
-
-        if (currentAscDate) {
-          const ascParams = {
-            consulate_id: consularFacilities[0],
-            consulate_date: consularDate,
-            consulate_time: consularTime
-          }
-
-          const bestAscDate = await checkAvailableDate(ascFacilities[0], ascParams)
-          if (!bestAscDate) {
-            log("No asc dates available")
-            continue
-          }
-
-          ascDate = bestAscDate < currentAscDate ? bestAscDate : currentAscDate
-          ascTime = await checkAvailableTime(ascFacilities[0], ascDate, ascParams)
-          params = Object.assign({}, params, {
-            ascDate,
-            ascTime
-          })
-        }
-
-        book(params).then(() => {
-          log(`Booked appointment with ${params}`)
-        })
-
-        currentConsularDate = consularDate
-        currentAscDate = ascDate
-      }
-
-      await sleep(REFRESH_DELAY)
+        // Yeni config içeriğini oluştur
+        const newContent = `export default ${JSON.stringify(config, null, 4)}`;
+        
+        await fs.writeFile(configPath, newContent, 'utf-8');
+        log(`Config updated with new date: ${newDate}`);
+    } catch (err) {
+        log(`Error updating config: ${err.message}`);
     }
-  } catch(err) {
-    console.error(err)
-    log("Trying again in 5 seconds")
-    await sleep(5)
+}
 
-    main(currentConsularDate, currentAscDate)
-  }
+async function main() {
+    // Komut satırı argümanı yerine config'den tarihi al
+    let currentConsularDate = config.currentDate;
+    let currentAscDate = null;
+
+    if (!currentConsularDate) {
+        log(`Invalid current consular date: ${currentConsularDate}`)
+        process.exit(1)
+    }
+
+    log(`Initializing with current consular date ${currentConsularDate} and asc date ${currentAscDate}`)
+
+    try {
+        sessionHeaders = await retry(login)
+        facilities = await retry(extractFacilities)
+
+        while(true) {
+            const { asc: ascFacilities, consular: consularFacilities } = facilities
+            const consularDate = await checkAvailableDate(consularFacilities[0])
+
+            if (!consularDate) {
+                log("No dates available")
+            } else if (consularDate >= currentConsularDate) {
+                log(`Nearest date is worse or equal what's already booked (${consularDate} vs ${currentConsularDate})`)
+            } else {
+                const consularTime = await checkAvailableTime(consularFacilities[0], consularDate)
+
+                let ascDate = ''
+                let ascTime = ''
+                let params = {
+                    consularFacilityId: consularFacilities[0],
+                    consularDate,
+                    consularTime,
+                    ascFacilityId: ascFacilities[0],
+                    ascDate,
+                    ascTime,
+                }
+
+                if (currentAscDate) {
+                    const ascParams = {
+                        consulate_id: consularFacilities[0],
+                        consulate_date: consularDate,
+                        consulate_time: consularTime
+                    }
+
+                    const bestAscDate = await checkAvailableDate(ascFacilities[0], ascParams)
+                    if (!bestAscDate) {
+                        log("No asc dates available")
+                        continue
+                    }
+
+                    ascDate = bestAscDate < currentAscDate ? bestAscDate : currentAscDate
+                    ascTime = await checkAvailableTime(ascFacilities[0], ascDate, ascParams)
+                    params = Object.assign({}, params, {
+                        ascDate,
+                        ascTime
+                    })
+                }
+
+                book(params).then(() => {
+                    log(`Booked appointment with ${params}`)
+                })
+
+                // Yeni tarih bulunduğunda config'i güncelle
+                await updateConfigDate(consularDate);
+                currentConsularDate = consularDate
+                currentAscDate = ascDate
+            }
+
+            const delay = getRandomDelay();
+            log(`Waiting ${delay} seconds before next attempt...`);
+            await sleep(delay);
+        }
+    } catch(err) {
+        console.error(err)
+        log("Trying again in 5 seconds")
+        await sleep(5)
+
+        main()
+    }
 }
 
 async function login() {
@@ -294,7 +334,5 @@ function log(message) {
   console.log(`[${new Date().toISOString()}]`, message)
 }
 
-const args = process.argv.slice(2);
-const currentConsularDate = args[0]
-const currentAscDate = args[1]
-main(currentConsularDate, currentAscDate)
+// Komut satırı argümanlarını kaldır ve doğrudan main'i çağır
+main()
